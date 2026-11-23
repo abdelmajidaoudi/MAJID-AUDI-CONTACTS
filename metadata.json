@@ -1,0 +1,6 @@
+{
+  "name": "Majid Aoudi Contact",
+  "description": "Gestionnaire professionnel de contacts hors ligne pour importer, organiser, fusionner, dédupliquer et exporter des fichiers VCF, CSV et JSON à grande échelle.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
