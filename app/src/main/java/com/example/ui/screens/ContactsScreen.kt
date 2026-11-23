@@ -32,10 +32,14 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.MergeType
 import androidx.compose.material.icons.automirrored.rounded.Sort
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Contacts
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Edit
@@ -46,6 +50,10 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Phone
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SelectAll
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.ui.platform.LocalContext
+import com.example.domain.util.WhatsAppHelper
+import com.example.ui.theme.SuccessGreen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -99,6 +107,7 @@ fun ContactsScreen(
     state: ContactsUiState,
     totalContactsCount: Int,
     noPhoneCount: Int,
+    defaultCountryCode: String,
     groups: List<GroupItem>,
     useSplitPane: Boolean,
     onSearchChanged: (String) -> Unit,
@@ -121,9 +130,12 @@ fun ContactsScreen(
     onClearSelection: () -> Unit,
     onOpenBatchEdit: () -> Unit,
     onExportSelection: (List<Long>) -> Unit,
+    onShareWhatsAppSelection: (List<Long>) -> Unit,
+    onSavePhonebookSelection: (List<Long>) -> Unit,
     onAssignToGroup: (contactId: Long, groupId: Long) -> Unit,
     detailPaneContent: @Composable (ContactDetail) -> Unit
 ) {
+    val context = LocalContext.current
     var arabicScriptMode by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
     var pendingDeleteIds by remember { mutableStateOf<List<Long>?>(null) }
@@ -160,14 +172,14 @@ fun ContactsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Majid Aoudi Contact",
+                                text = "AA contacts",
                                 style = MaterialTheme.typography.titleLarge,
                                 color = Color.White,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "$totalContactsCount contact(s) • Base locale hors ligne",
+                                text = "$totalContactsCount contact(s) • Base locale & Drive",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.White.copy(alpha = 0.85f)
                             )
@@ -407,6 +419,12 @@ fun ContactsScreen(
                         IconButton(onClick = onOpenBatchEdit) {
                             Icon(Icons.Rounded.Edit, contentDescription = "Modifier la sélection")
                         }
+                        IconButton(onClick = { onShareWhatsAppSelection(state.selectedIds.toList()) }) {
+                            Icon(Icons.Rounded.Share, contentDescription = "Envoyer sur WhatsApp")
+                        }
+                        IconButton(onClick = { onSavePhonebookSelection(state.selectedIds.toList()) }) {
+                            Icon(Icons.Rounded.Contacts, contentDescription = "Enregistrer sur le téléphone")
+                        }
                         IconButton(onClick = { onExportSelection(state.selectedIds.toList()) }) {
                             Icon(Icons.Rounded.Download, contentDescription = "Exporter la sélection")
                         }
@@ -466,10 +484,18 @@ fun ContactsScreen(
                                 else onInspectContact(contact.id)
                             },
                             onLongClick = { onToggleSelect(contact.id) },
+                            onOpenWhatsApp = {
+                                val url = WhatsAppHelper.buildWaMeUrl(contact.primaryPhone, defaultCountryCode)
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                }
+                            },
                             onEdit = { onEditContact(contact.id) },
                             onDuplicate = { onDuplicateContact(contact.id) },
                             onSelectRange = { onSelectRangeTo(contact.id) },
                             onAssignGroup = { grpId -> onAssignToGroup(contact.id, grpId) },
+                            onShareWhatsApp = { onShareWhatsAppSelection(listOf(contact.id)) },
+                            onSavePhonebook = { onSavePhonebookSelection(listOf(contact.id)) },
                             onExportSingle = { onExportSelection(listOf(contact.id)) },
                             onDelete = { pendingDeleteIds = listOf(contact.id) }
                         )
@@ -592,10 +618,13 @@ private fun ContactRowCard(
     groups: List<GroupItem>,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onOpenWhatsApp: () -> Unit,
     onEdit: () -> Unit,
     onDuplicate: () -> Unit,
     onSelectRange: () -> Unit,
     onAssignGroup: (Long) -> Unit,
+    onShareWhatsApp: () -> Unit,
+    onSavePhonebook: () -> Unit,
     onExportSingle: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -729,11 +758,52 @@ private fun ContactRowCard(
                 }
             }
 
+            if (contact.primaryPhone.isNotBlank()) {
+                IconButton(
+                    onClick = onOpenWhatsApp,
+                    modifier = Modifier.testTag("row_whatsapp_${contact.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.Chat,
+                        contentDescription = "Message WhatsApp",
+                        tint = SuccessGreen
+                    )
+                }
+            }
+
             Box {
                 IconButton(onClick = { showMenu = true }) {
                     Icon(Icons.Rounded.MoreVert, contentDescription = "Menu contextuel du contact")
                 }
                 DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    if (contact.primaryPhone.isNotBlank()) {
+                        DropdownMenuItem(
+                            text = { Text("Message WhatsApp (wa.me)") },
+                            leadingIcon = {
+                                Icon(Icons.AutoMirrored.Rounded.Chat, contentDescription = null, tint = SuccessGreen)
+                            },
+                            onClick = {
+                                showMenu = false
+                                onOpenWhatsApp()
+                            }
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Envoyer sur WhatsApp (.vcf)") },
+                        leadingIcon = { Icon(Icons.Rounded.Share, contentDescription = null) },
+                        onClick = {
+                            showMenu = false
+                            onShareWhatsApp()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Enregistrer sur le téléphone") },
+                        leadingIcon = { Icon(Icons.Rounded.Contacts, contentDescription = null) },
+                        onClick = {
+                            showMenu = false
+                            onSavePhonebook()
+                        }
+                    )
                     DropdownMenuItem(
                         text = { Text("Modifier") },
                         leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },

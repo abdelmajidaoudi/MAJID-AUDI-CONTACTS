@@ -25,12 +25,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Business
 import androidx.compose.material.icons.rounded.Cake
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Contacts
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Edit
@@ -38,7 +40,11 @@ import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Notes
 import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Sms
+import com.example.data.local.PhonebookSyncHelper
+import com.example.domain.util.WhatsAppHelper
+import com.example.ui.theme.SuccessGreen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -86,10 +92,12 @@ import kotlin.math.absoluteValue
 @Composable
 fun ContactDetailContent(
     contact: ContactDetail,
+    defaultCountryCode: String,
     onClose: () -> Unit,
     onEdit: () -> Unit,
     onDuplicate: () -> Unit,
     onExportSingle: () -> Unit,
+    onShareWhatsAppVcf: () -> Unit,
     onDelete: () -> Unit
 ) {
     val context = LocalContext.current
@@ -179,21 +187,72 @@ fun ContactDetailContent(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.padding(16.dp)
         ) {
+            // Quick Share & Save on Phone row
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(PhonebookSyncHelper.buildInsertContactIntent(contact))
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("detail_save_phonebook_button")
+                ) {
+                    Icon(Icons.Rounded.Contacts, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Sauver sur tél.", maxLines = 1)
+                }
+                Button(
+                    onClick = onShareWhatsAppVcf,
+                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Color.White),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("detail_share_whatsapp_button")
+                ) {
+                    Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Partager VCF", maxLines = 1)
+                }
+            }
+
             if (contact.phones.isNotEmpty()) {
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Téléphones", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-                        contact.phones.forEach { phone ->
+                        Text("Téléphones & WhatsApp", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                        contact.phones.forEachIndexed { idx, phone ->
+                            val waUrl = WhatsAppHelper.buildWaMeUrl(phone.number, defaultCountryCode)
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(phone.number, style = MaterialTheme.typography.bodyLarge)
-                                    Text(phone.typeLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        "${phone.typeLabel} • $waUrl",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        runCatching {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(waUrl)))
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("whatsapp_direct_button_$idx")
+                                ) {
+                                    Icon(
+                                        Icons.AutoMirrored.Rounded.Chat,
+                                        contentDescription = "Envoyer un message sur WhatsApp",
+                                        tint = SuccessGreen
+                                    )
                                 }
                                 IconButton(onClick = {
                                     runCatching {
@@ -210,6 +269,20 @@ fun ContactDetailContent(
                                     Icon(Icons.Rounded.Sms, contentDescription = "Envoyer SMS", tint = MaterialTheme.colorScheme.secondary)
                                 }
                             }
+                        }
+                        TextButton(
+                            onClick = {
+                                val text = WhatsAppHelper.formatContactAsShareText(contact, defaultCountryCode)
+                                val url = WhatsAppHelper.buildWaMeTextUrl(text)
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                }
+                            },
+                            modifier = Modifier.testTag("share_contact_text_whatsapp")
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.Chat, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Envoyer cette fiche en message WhatsApp", color = SuccessGreen)
                         }
                     }
                 }

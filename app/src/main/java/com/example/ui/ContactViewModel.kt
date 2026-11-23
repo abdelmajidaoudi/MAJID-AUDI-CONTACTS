@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
 import com.example.data.local.PhotoStorage
 import com.example.data.local.PreferencesRepository
+import com.example.data.remote.GoogleDriveSyncService
 import com.example.data.repository.ContactRepository
 import com.example.domain.model.BackupRecord
 import com.example.domain.model.ContactDetail
@@ -76,18 +77,58 @@ data class DuplicatesUiState(
     val hasScannedOnce: Boolean = false
 )
 
+data class ShareVcfRequest(
+    val uri: Uri,
+    val preferWhatsApp: Boolean
+)
+
+enum class DriveSyncAction {
+    TWO_WAY_SYNC,
+    BACKUP_ONLY,
+    RESTORE_MERGE,
+    RESTORE_REPLACE
+}
+
 class ContactViewModel(application: Application) : AndroidViewModel(application) {
 
     private val db = AppDatabase.getInstance(application)
     val photoStorage = PhotoStorage(application)
     private val prefsRepo = PreferencesRepository(application)
     private val repository = ContactRepository(application, db, photoStorage)
+    private val driveService = GoogleDriveSyncService()
 
     val themeMode: StateFlow<ThemeMode> = prefsRepo.themeMode.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
         ThemeMode.SYSTEM
     )
+
+    val defaultCountryCode: StateFlow<String> = prefsRepo.defaultCountryCode.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        "212"
+    )
+
+    val driveAccountEmail: StateFlow<String?> = prefsRepo.driveAccountEmail.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        null
+    )
+
+    val lastDriveSyncTimestamp: StateFlow<Long> = prefsRepo.lastDriveSyncTimestamp.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        0L
+    )
+
+    val lastDriveSyncInfo: StateFlow<String> = prefsRepo.lastDriveSyncInfo.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        ""
+    )
+
+    private val _isDriveSyncing = MutableStateFlow(false)
+    val isDriveSyncing: StateFlow<Boolean> = _isDriveSyncing.asStateFlow()
 
     val totalContactsCount: StateFlow<Int> = repository.totalCount.stateIn(
         viewModelScope,
@@ -128,6 +169,9 @@ class ContactViewModel(application: Application) : AndroidViewModel(application)
     private val _snackbarEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val snackbarEvents: SharedFlow<String> = _snackbarEvents.asSharedFlow()
 
+    private val _shareVcfEvents = MutableSharedFlow<ShareVcfRequest>(extraBufferCapacity = 4)
+    val shareVcfEvents: SharedFlow<ShareVcfRequest> = _shareVcfEvents.asSharedFlow()
+
     private var searchDebounceJob: Job? = null
     private var queryJob: Job? = null
     private var activeOperationJob: Job? = null
@@ -140,6 +184,178 @@ class ContactViewModel(application: Application) : AndroidViewModel(application)
 
     fun setThemeMode(mode: ThemeMode) {
         viewModelScope.launch { prefsRepo.setThemeMode(mode) }
+    }
+
+    fun setDefaultCountryCode(code: String) {
+        viewModelScope.launch { prefsRepo.setDefaultCountryCode(code) }
+    }
+
+    fun setDriveAccountEmail(email: String?) {
+        viewModelScope.launch { prefsRepo.setDriveAccountEmail(email) }
+    }
+
+    fun disconnectDrive() {
+        viewModelScope.launch {
+            prefsRepo.setDriveAccountEmail(null)
+            prefsRepo.recordDriveSync(0L, "")
+            _snackbarEvents.tryEmit("Compte Google Drive déconnecté")
+        }
+    }
+
+    fun executeDriveAction(accessToken: String, action: DriveSyncAction) {
+        if (_isDriveSyncing.value) return
+        viewModelScope.launch {
+            _isDriveSyncing.value = true
+            _operationProgress.value = OperationProgress(
+                title = "Synchronisation Google Drive…",
+                current = 0,
+                total = 0,
+                indeterminate = true,
+                detail = "Connexion sécurisée à votre Drive…"
+            )
+            try {
+                when (action) {
+                    DriveSyncAction.TWO_WAY_SYNC -> {
+                        val existingJson = driveService.findSyncFile(accessToken, GoogleDriveSyncService.DRIVE_SYNC_JSON_NAME)
+                        var addedFromDrive = 0
+                        if (existingJson != null) {
+                            _operationProgress.value = OperationProgress(
+                                title = "Synchronisation Google Drive…",
+                                current = 0,
+                                total = 0,
+                                indeterminate = true,
+                                detail = "Fusion des contacts distants…"
+                            )
+                            val remoteBytes = driveService.downloadFileBytes(accessToken, existingJson.id)
+                            addedFromDrive = repository.mergeFromDriveSnapshotBytes(remoteBytes, replaceExisting = false)
+                        }
+                        _operationProgress.value = OperationProgress(
+                            title = "Synchronisation Google Drive…",
+                            current = 0,
+                            total = 0,
+                            indeterminate = true,
+                            detail = "Envoi de votre carnet mis à jour sur Drive…"
+                        )
+                        val jsonBytes = repository.exportAllToGzipJsonBytes()
+                        driveService.uploadOrUpdateFile(
+                            accessToken = accessToken,
+                            fileName = GoogleDriveSyncService.DRIVE_SYNC_JSON_NAME,
+                            mimeType = "application/gzip",
+                            bytes = jsonBytes,
+                            existingFileId = existingJson?.id
+                        )
+                        val existingVcf = driveService.findSyncFile(accessToken, GoogleDriveSyncService.DRIVE_SYNC_VCF_NAME)
+                        val vcfBytes = repository.exportAllToVcfBytes()
+                        driveService.uploadOrUpdateFile(
+                            accessToken = accessToken,
+                            fileName = GoogleDriveSyncService.DRIVE_SYNC_VCF_NAME,
+                            mimeType = "text/x-vcard",
+                            bytes = vcfBytes,
+                            existingFileId = existingVcf?.id
+                        )
+                        val totalNow = repository.getTotalCountNow()
+                        val summary = "$totalNow contact(s) synchronisés ($addedFromDrive importé(s) depuis Drive)"
+                        prefsRepo.recordDriveSync(System.currentTimeMillis(), summary)
+                        refreshContactsPage()
+                        _snackbarEvents.tryEmit("Drive synchronisé : $summary")
+                    }
+                    DriveSyncAction.BACKUP_ONLY -> {
+                        val existingJson = driveService.findSyncFile(accessToken, GoogleDriveSyncService.DRIVE_SYNC_JSON_NAME)
+                        val jsonBytes = repository.exportAllToGzipJsonBytes()
+                        driveService.uploadOrUpdateFile(
+                            accessToken = accessToken,
+                            fileName = GoogleDriveSyncService.DRIVE_SYNC_JSON_NAME,
+                            mimeType = "application/gzip",
+                            bytes = jsonBytes,
+                            existingFileId = existingJson?.id
+                        )
+                        val existingVcf = driveService.findSyncFile(accessToken, GoogleDriveSyncService.DRIVE_SYNC_VCF_NAME)
+                        val vcfBytes = repository.exportAllToVcfBytes()
+                        driveService.uploadOrUpdateFile(
+                            accessToken = accessToken,
+                            fileName = GoogleDriveSyncService.DRIVE_SYNC_VCF_NAME,
+                            mimeType = "text/x-vcard",
+                            bytes = vcfBytes,
+                            existingFileId = existingVcf?.id
+                        )
+                        val totalNow = repository.getTotalCountNow()
+                        val summary = "Sauvegarde Drive effectuée ($totalNow contacts + VCF)"
+                        prefsRepo.recordDriveSync(System.currentTimeMillis(), summary)
+                        _snackbarEvents.tryEmit(summary)
+                    }
+                    DriveSyncAction.RESTORE_MERGE, DriveSyncAction.RESTORE_REPLACE -> {
+                        val existingJson = driveService.findSyncFile(accessToken, GoogleDriveSyncService.DRIVE_SYNC_JSON_NAME)
+                        if (existingJson == null) {
+                            _snackbarEvents.tryEmit("Aucune sauvegarde AA contacts trouvée sur votre Google Drive")
+                        } else {
+                            val remoteBytes = driveService.downloadFileBytes(accessToken, existingJson.id)
+                            val imported = repository.mergeFromDriveSnapshotBytes(
+                                bytes = remoteBytes,
+                                replaceExisting = action == DriveSyncAction.RESTORE_REPLACE
+                            )
+                            val summary = "$imported contact(s) restaurés depuis Google Drive"
+                            prefsRepo.recordDriveSync(System.currentTimeMillis(), summary)
+                            refreshContactsPage()
+                            _snackbarEvents.tryEmit(summary)
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                _snackbarEvents.tryEmit("Erreur Google Drive : ${t.localizedMessage ?: "vérifiez votre connexion"}")
+            } finally {
+                _isDriveSyncing.value = false
+                _operationProgress.value = null
+            }
+        }
+    }
+
+    fun saveContactsToDevicePhonebook(selectedIds: List<Long>? = null) {
+        cancelFlag.set(false)
+        activeOperationJob?.cancel()
+        activeOperationJob = viewModelScope.launch {
+            _operationProgress.value = OperationProgress(
+                title = "Enregistrement sur le téléphone…",
+                current = 0,
+                total = selectedIds?.size ?: 0,
+                indeterminate = selectedIds == null,
+                detail = "Ajout au répertoire Android…"
+            )
+            try {
+                val saved = repository.saveToDevicePhonebook(
+                    selectedIds = selectedIds,
+                    onProgress = { cur, tot ->
+                        _operationProgress.value = OperationProgress(
+                            title = "Enregistrement dans le répertoire…",
+                            current = cur,
+                            total = tot,
+                            indeterminate = tot <= 0,
+                            detail = "$cur / $tot contacts enregistrés"
+                        )
+                    },
+                    isCancelled = { cancelFlag.get() }
+                )
+                _snackbarEvents.tryEmit("$saved contact(s) enregistré(s) dans le répertoire du téléphone")
+            } catch (t: Throwable) {
+                _snackbarEvents.tryEmit("Erreur répertoire téléphone : ${t.localizedMessage}")
+            } finally {
+                _operationProgress.value = null
+            }
+        }
+    }
+
+    fun shareContactsVcf(
+        selectedIds: List<Long>? = null,
+        preferWhatsApp: Boolean = false,
+        fileName: String = "AA_Contacts.vcf"
+    ) {
+        viewModelScope.launch {
+            try {
+                val uri = repository.prepareShareVcfUri(selectedIds = selectedIds, fileName = fileName)
+                _shareVcfEvents.tryEmit(ShareVcfRequest(uri = uri, preferWhatsApp = preferWhatsApp))
+            } catch (t: Throwable) {
+                _snackbarEvents.tryEmit("Erreur lors de la préparation du partage : ${t.localizedMessage}")
+            }
+        }
     }
 
     fun onSearchQueryChanged(query: String) {
@@ -629,7 +845,7 @@ class ContactViewModel(application: Application) : AndroidViewModel(application)
                     outputUri = outputUri,
                     onProgress = { n ->
                         _operationProgress.value = OperationProgress(
-                            title = "Écriture Majid_Aoudi_Contacts.vcf…",
+                            title = "Écriture AA_Contacts.vcf…",
                             current = n,
                             total = total,
                             detail = "$n / $total contacts"

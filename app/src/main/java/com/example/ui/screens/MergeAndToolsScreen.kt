@@ -24,6 +24,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Contacts
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.ExpandLess
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.FolderCopy
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.TableChart
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -92,7 +94,9 @@ fun MergeAndToolsScreen(
     onScanDuplicates: () -> Unit,
     onMergeDuplicateCluster: (DuplicateCluster) -> Unit,
     onDeleteDuplicateContact: (Long) -> Unit,
-    onTriggerExport: (ExportFormat) -> Unit
+    onTriggerExport: (ExportFormat) -> Unit,
+    onShareWhatsApp: () -> Unit,
+    onSaveToPhonebook: () -> Unit
 ) {
     var selectedSubTab by remember { mutableIntStateOf(0) }
     val subTabs = listOf("Fusion VCF", "Doublons", "Exportation")
@@ -149,7 +153,9 @@ fun MergeAndToolsScreen(
             )
             2 -> ExportCenterPane(
                 totalContactsCount = totalContactsCount,
-                onTriggerExport = onTriggerExport
+                onTriggerExport = onTriggerExport,
+                onShareWhatsApp = onShareWhatsApp,
+                onSaveToPhonebook = onSaveToPhonebook
             )
         }
     }
@@ -183,7 +189,7 @@ private fun VcfMergePane(
                         style = MaterialTheme.typography.titleLarge
                     )
                     Text(
-                        "Sélectionnez plusieurs fichiers (ex : Famille.vcf, Travail.vcf, Amis.vcf), vérifiez les doublons et générez Majid_Aoudi_Contacts.vcf.",
+                        "Sélectionnez plusieurs fichiers (ex : Famille.vcf, Travail.vcf, Amis.vcf), vérifiez les doublons et générez AA_Contacts.vcf.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -275,7 +281,7 @@ private fun VcfMergePane(
                             ) {
                                 Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Enregistrer Majid_Aoudi_Contacts.vcf")
+                                Text("Enregistrer AA_Contacts.vcf")
                             }
                             OutlinedButton(
                                 onClick = onSaveMergedToDatabase,
@@ -534,7 +540,9 @@ private fun DuplicatesPane(
 @Composable
 private fun ExportCenterPane(
     totalContactsCount: Int,
-    onTriggerExport: (ExportFormat) -> Unit
+    onTriggerExport: (ExportFormat) -> Unit,
+    onShareWhatsApp: () -> Unit,
+    onSaveToPhonebook: () -> Unit
 ) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -543,13 +551,31 @@ private fun ExportCenterPane(
     ) {
         item {
             Text(
-                "Exporter $totalContactsCount contact(s)",
+                "Exporter ou partager $totalContactsCount contact(s)",
                 style = MaterialTheme.typography.titleLarge
             )
             Text(
-                "Préserve les numéros multiples, e-mails, photos, notes, groupes et champs personnalisés.",
+                "Envoyez sur WhatsApp, enregistrez dans le téléphone ou exportez en VCF/CSV/JSON avec numéros multiples, photos et groupes.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item {
+            ExportBigCard(
+                icon = Icons.Rounded.Share,
+                title = "Envoyer mes contacts sur WhatsApp (.vcf)",
+                description = "Génère un fichier vCard complet et l'envoie directement vers WhatsApp ou le menu de partage.",
+                buttonLabel = "Envoyer sur WhatsApp",
+                onClick = onShareWhatsApp
+            )
+        }
+        item {
+            ExportBigCard(
+                icon = Icons.Rounded.Contacts,
+                title = "Sauvegarder dans le répertoire du téléphone",
+                description = "Enregistre tous vos contacts AA contacts directement dans le répertoire natif Android de votre appareil.",
+                buttonLabel = "Sauvegarder sur le téléphone",
+                onClick = onSaveToPhonebook
             )
         }
         item {

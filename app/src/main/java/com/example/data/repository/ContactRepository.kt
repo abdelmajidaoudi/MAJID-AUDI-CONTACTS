@@ -36,6 +36,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -1046,6 +1048,90 @@ class ContactRepository(
             dao.deleteAllContacts()
         }
         return importParsedContactsToDb(parsed)
+    }
+
+    suspend fun exportAllToGzipJsonBytes(): ByteArray = withContext(Dispatchers.IO) {
+        val baos = ByteArrayOutputStream()
+        GZIPOutputStream(baos).use { gz ->
+            VcfCodec.writeJsonStream(
+                contacts = streamContactDetails(),
+                outputStream = gz,
+                photoLoader = { path -> photoStorage.readPhotoBytes(path) }
+            )
+        }
+        baos.toByteArray()
+    }
+
+    suspend fun exportAllToVcfBytes(): ByteArray = withContext(Dispatchers.IO) {
+        val baos = ByteArrayOutputStream()
+        VcfCodec.writeVcfStream(
+            contacts = streamContactDetails(),
+            outputStream = baos,
+            photoLoader = { path -> photoStorage.readPhotoBytes(path) }
+        )
+        baos.toByteArray()
+    }
+
+    /**
+     * Imports contacts from a Google Drive GZIP JSON snapshot, skipping entries whose UID or
+     * primary phone/name already exist locally so sync does not duplicate contacts.
+     */
+    suspend fun mergeFromDriveSnapshotBytes(
+        bytes: ByteArray,
+        replaceExisting: Boolean
+    ): Int = withContext(Dispatchers.IO) {
+        val parsed = GZIPInputStream(ByteArrayInputStream(bytes)).use { gz ->
+            VcfCodec.parseJsonBackup(gz)
+        }
+        if (replaceExisting) {
+            createLocalBackup(isAutomatic = true)
+            photoStorage.clearAllPhotos()
+            dao.deleteAllContacts()
+            return@withContext importParsedContactsToDb(parsed)
+        }
+        // Smart deduplicated merge against existing local contacts
+        val newOnly = ArrayList<ParsedContact>()
+        for (p in parsed) {
+            val tails = p.phones.map { PhoneNormalizer.tailKey(it.number) }.filter { it.isNotEmpty() }
+            val emails = p.emails.map { it.email.trim().lowercase() }.filter { it.isNotEmpty() }
+            val sortKey = AlphaHelper.computeSortKey(p.resolvedDisplayName())
+
+            val existsByPhone = tails.isNotEmpty() && dao.findContactIdsByPhoneTails(tails).isNotEmpty()
+            val existsByEmail = !existsByPhone && emails.isNotEmpty() && dao.findContactIdsByEmails(emails).isNotEmpty()
+            val existsByName = !existsByPhone && !existsByEmail && sortKey.isNotEmpty() && sortKey != "zzz" &&
+                dao.findContactIdsBySortKeys(listOf(sortKey)).isNotEmpty()
+
+            if (!existsByPhone && !existsByEmail && !existsByName) {
+                newOnly.add(p)
+            }
+        }
+        if (newOnly.isEmpty()) 0 else importParsedContactsToDb(newOnly)
+    }
+
+    suspend fun saveToDevicePhonebook(
+        selectedIds: List<Long>? = null,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+        isCancelled: () -> Boolean = { false }
+    ): Int = withContext(Dispatchers.IO) {
+        val list = streamContactDetails(selectedIds = selectedIds).toList()
+        com.example.data.local.PhonebookSyncHelper.saveContactsToDevicePhonebook(
+            context = context,
+            contacts = list,
+            onProgress = onProgress,
+            isCancelled = isCancelled
+        )
+    }
+
+    suspend fun prepareShareVcfUri(
+        selectedIds: List<Long>? = null,
+        fileName: String = "AA_Contacts.vcf"
+    ): Uri = withContext(Dispatchers.IO) {
+        com.example.data.local.PhonebookSyncHelper.createShareVcfUri(
+            context = context,
+            contacts = streamContactDetails(selectedIds = selectedIds),
+            fileName = fileName,
+            photoStorage = photoStorage
+        )
     }
 
     /**

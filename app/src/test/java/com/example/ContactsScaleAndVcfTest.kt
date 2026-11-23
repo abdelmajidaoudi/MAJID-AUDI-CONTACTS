@@ -14,6 +14,7 @@ import com.example.domain.model.GroupItem
 import com.example.domain.model.PhoneEntry
 import com.example.domain.util.AlphaHelper
 import com.example.domain.util.PhoneNormalizer
+import com.example.domain.util.WhatsAppHelper
 import com.example.domain.vcard.VcfCodec
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -104,6 +105,14 @@ class ContactsScaleAndVcfTest {
         assertEquals("ا", AlphaHelper.computeFirstLetter("أحمد"))
         assertEquals("ا", AlphaHelper.computeFirstLetter("إبراهيم"))
         assertEquals("#", AlphaHelper.computeFirstLetter("0612345678"))
+    }
+
+    @Test
+    fun `whatsapp helper generates wa me links with default Morocco 212 country code`() {
+        assertEquals("https://wa.me/212612345678", WhatsAppHelper.buildWaMeUrl("06 12 34 56 78", "212"))
+        assertEquals("https://wa.me/212612345678", WhatsAppHelper.buildWaMeUrl("+212 6 12 34 56 78", "212"))
+        assertEquals("https://wa.me/212612345678", WhatsAppHelper.buildWaMeUrl("00212 612-345-678", "212"))
+        assertEquals("https://wa.me/33612345678", WhatsAppHelper.buildWaMeUrl("+33 6 12 34 56 78", "212"))
     }
 
     @Test

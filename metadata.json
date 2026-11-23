@@ -1,6 +1,6 @@
 {
-  "name": "Majid Aoudi Contact",
-  "description": "Gestionnaire professionnel de contacts hors ligne pour importer, organiser, fusionner, dédupliquer et exporter des fichiers VCF, CSV et JSON à grande échelle.",
+  "name": "AA contacts",
+  "description": "Gestionnaire professionnel de contacts avec import/fusion VCF, détection de doublons, synchronisation Google Drive, liens directs WhatsApp (wa.me) et sauvegarde téléphone.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

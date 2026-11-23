@@ -26,10 +26,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Contacts
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FolderCopy
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.TableChart
-import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -188,14 +190,14 @@ fun SplashOverlay(
                 }
                 Spacer(modifier = Modifier.height(24.dp))
                 Text(
-                    text = "Majid Aoudi Contact",
+                    text = "AA contacts",
                     style = MaterialTheme.typography.displaySmall,
                     color = Color.White,
                     textAlign = TextAlign.Center
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Gestionnaire de contacts professionnel • VCF • Hors ligne",
+                    text = "Gestionnaire professionnel • VCF • Drive & WhatsApp",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(alpha = 0.88f),
                     textAlign = TextAlign.Center
@@ -291,27 +293,43 @@ fun OperationProgressDialog(
 fun ExportOptionsDialog(
     selectedCount: Int,
     onDismiss: () -> Unit,
-    onSelectFormat: (ExportFormat) -> Unit
+    onSelectFormat: (ExportFormat) -> Unit,
+    onShareWhatsApp: () -> Unit,
+    onSaveToPhonebook: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = if (selectedCount > 0) "Exporter $selectedCount contact(s)" else "Exporter les contacts",
+                text = if (selectedCount > 0) "Exporter / Envoyer ($selectedCount)" else "Exporter ou partager",
                 style = MaterialTheme.typography.titleLarge
             )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Choisissez le format d'exportation :",
+                    text = "Choisissez une action :",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 ExportFormatRow(
+                    icon = Icons.Rounded.Share,
+                    title = "Envoyer sur WhatsApp (.vcf)",
+                    subtitle = "Partage instantané du fichier vCard via WhatsApp",
+                    onClick = onShareWhatsApp,
+                    testTag = "export_share_whatsapp"
+                )
+                ExportFormatRow(
+                    icon = Icons.Rounded.Contacts,
+                    title = "Enregistrer dans le téléphone",
+                    subtitle = "Ajoute directement au répertoire Android de l'appareil",
+                    onClick = onSaveToPhonebook,
+                    testTag = "export_save_phonebook"
+                )
+                ExportFormatRow(
                     icon = Icons.Rounded.Download,
                     title = ExportFormat.VCF_SINGLE.label,
-                    subtitle = "Compatible Android, iOS, Outlook et vCard 3.0",
+                    subtitle = "Enregistrer un fichier .vcf sur le stockage du téléphone",
                     onClick = { onSelectFormat(ExportFormat.VCF_SINGLE) },
                     testTag = "export_vcf_single"
                 )

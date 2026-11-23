@@ -527,7 +527,7 @@ object VcfCodec {
         isCancelled: () -> Boolean = { false }
     ): Int {
         val writer = BufferedWriter(OutputStreamWriter(outputStream, StandardCharsets.UTF_8), 64 * 1024)
-        writer.write("{\n  \"app\": \"Majid Aoudi Contact\",\n  \"version\": 1,\n  \"exportedAt\": ${System.currentTimeMillis()},\n  \"contacts\": [\n")
+        writer.write("{\n  \"app\": \"AA contacts\",\n  \"version\": 1,\n  \"exportedAt\": ${System.currentTimeMillis()},\n  \"contacts\": [\n")
         var written = 0
         for (c in contacts) {
             if (isCancelled()) break

@@ -1,11 +1,19 @@
 package com.example
 
+import android.Manifest
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.Image
@@ -33,7 +41,6 @@ import androidx.compose.material.icons.rounded.FolderShared
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -50,21 +57,29 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.credentials.CredentialManager
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.data.local.PhonebookSyncHelper
 import com.example.domain.model.ExportFormat
 import com.example.ui.ContactViewModel
+import com.example.ui.DriveSyncAction
 import com.example.ui.components.BatchEditDialog
 import com.example.ui.components.ExportOptionsDialog
 import com.example.ui.components.OperationProgressDialog
@@ -76,7 +91,16 @@ import com.example.ui.screens.GroupsScreen
 import com.example.ui.screens.MergeAndToolsScreen
 import com.example.ui.screens.SettingsAndGuideScreen
 import com.example.ui.theme.MajidAoudiContactTheme
-import androidx.activity.compose.rememberLauncherForActivityResult
+import com.google.android.gms.auth.api.identity.AuthorizationRequest
+import com.google.android.gms.auth.api.identity.Identity
+import com.google.android.gms.common.api.Scope
+import com.google.android.gms.tasks.Task
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 object AppRoutes {
     const val CONTACTS = "contacts"
@@ -97,7 +121,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
             MajidAoudiContactTheme(themeMode = themeMode) {
-                MajidAoudiApp(viewModel = viewModel)
+                AAContactsApp(viewModel = viewModel)
             }
         }
     }
@@ -117,9 +141,28 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+private suspend fun <T> Task<T>.awaitResult(): T = suspendCancellableCoroutine { cont ->
+    addOnSuccessListener { result ->
+        if (cont.isActive) cont.resume(result)
+    }
+    addOnFailureListener { exc ->
+        if (cont.isActive) cont.resumeWithException(exc)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MajidAoudiApp(viewModel: ContactViewModel) {
+fun AAContactsApp(viewModel: ContactViewModel) {
+    val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
+    val coroutineScope = rememberCoroutineScope()
+
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: AppRoutes.CONTACTS
@@ -134,6 +177,11 @@ fun MajidAoudiApp(viewModel: ContactViewModel) {
     val backups by viewModel.backups.collectAsStateWithLifecycle()
     val benchmarkReport by viewModel.benchmarkReport.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+    val defaultCountryCode by viewModel.defaultCountryCode.collectAsStateWithLifecycle()
+    val driveAccountEmail by viewModel.driveAccountEmail.collectAsStateWithLifecycle()
+    val lastDriveSyncTimestamp by viewModel.lastDriveSyncTimestamp.collectAsStateWithLifecycle()
+    val lastDriveSyncInfo by viewModel.lastDriveSyncInfo.collectAsStateWithLifecycle()
+    val isDriveSyncing by viewModel.isDriveSyncing.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     var showSplash by rememberSaveable { mutableStateOf(true) }
@@ -142,13 +190,168 @@ fun MajidAoudiApp(viewModel: ContactViewModel) {
     var pendingExportSelectedIds by remember { mutableStateOf<List<Long>?>(null) }
     var pendingExportGroupId by remember { mutableStateOf<Long?>(null) }
 
+    var pendingPhonebookIds by remember { mutableStateOf<List<Long>?>(null) }
+    var pendingPhonebookAll by remember { mutableStateOf(false) }
+
+    var pendingDriveAction by remember { mutableStateOf<DriveSyncAction?>(null) }
+
     LaunchedEffect(Unit) {
         viewModel.snackbarEvents.collect { message ->
             snackbarHostState.showSnackbar(message)
         }
     }
 
-    // SAF Document Launchers (Zero dangerous permissions needed!)
+    LaunchedEffect(Unit) {
+        viewModel.shareVcfEvents.collect { req ->
+            if (req.preferWhatsApp) {
+                try {
+                    context.startActivity(PhonebookSyncHelper.buildShareVcfIntent(req.uri, "com.whatsapp"))
+                } catch (_: ActivityNotFoundException) {
+                    try {
+                        context.startActivity(PhonebookSyncHelper.buildShareVcfIntent(req.uri, "com.whatsapp.w4b"))
+                    } catch (_: ActivityNotFoundException) {
+                        context.startActivity(
+                            Intent.createChooser(
+                                PhonebookSyncHelper.buildShareVcfIntent(req.uri, null),
+                                "Envoyer les contacts sur WhatsApp"
+                            )
+                        )
+                    }
+                }
+            } else {
+                context.startActivity(
+                    Intent.createChooser(
+                        PhonebookSyncHelper.buildShareVcfIntent(req.uri, null),
+                        "Partager les contacts (.vcf)"
+                    )
+                )
+            }
+        }
+    }
+
+    val writeContactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val ids = if (pendingPhonebookAll) null else pendingPhonebookIds
+        pendingPhonebookIds = null
+        pendingPhonebookAll = false
+        if (granted) {
+            viewModel.saveContactsToDevicePhonebook(ids)
+        } else {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("Permission Contacts requise pour enregistrer dans le répertoire du téléphone")
+            }
+        }
+    }
+
+    fun triggerSaveToPhonebook(selectedIds: List<Long>? = null) {
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.WRITE_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (hasPermission) {
+            viewModel.saveContactsToDevicePhonebook(selectedIds)
+        } else {
+            pendingPhonebookIds = selectedIds
+            pendingPhonebookAll = selectedIds == null
+            writeContactsPermissionLauncher.launch(Manifest.permission.WRITE_CONTACTS)
+        }
+    }
+
+    val driveAuthScope = remember { Scope("https://www.googleapis.com/auth/drive.file") }
+
+    val driveAuthResolutionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val action = pendingDriveAction
+        pendingDriveAction = null
+        if (result.resultCode == Activity.RESULT_OK && result.data != null && activity != null && action != null) {
+            runCatching {
+                val authResult = Identity.getAuthorizationClient(activity).getAuthorizationResultFromIntent(result.data)
+                val token = authResult.accessToken
+                if (!token.isNullOrBlank()) {
+                    if (driveAccountEmail == null) {
+                        viewModel.setDriveAccountEmail("Compte Google connecté")
+                    }
+                    viewModel.executeDriveAction(token, action)
+                } else {
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar("Jeton d'accès Google Drive indisponible")
+                    }
+                }
+            }.onFailure { err ->
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar("Erreur d'autorisation Drive : ${err.localizedMessage ?: "annulée"}")
+                }
+            }
+        } else if (action != null) {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("Autorisation Google Drive annulée")
+            }
+        }
+    }
+
+    fun requestDriveSync(action: DriveSyncAction) {
+        if (activity == null) return
+        coroutineScope.launch {
+            try {
+                if (driveAccountEmail == null) {
+                    val webClientId = context.getString(R.string.google_oauth_web_client_id)
+                    if (webClientId.isNotBlank()) {
+                        try {
+                            val googleIdOption = GetGoogleIdOption.Builder()
+                                .setFilterByAuthorizedAccounts(false)
+                                .setServerClientId(webClientId)
+                                .build()
+                            val credentialRequest = GetCredentialRequest.Builder()
+                                .addCredentialOption(googleIdOption)
+                                .build()
+                            val credManager = CredentialManager.create(context)
+                            val credResult = credManager.getCredential(activity, credentialRequest)
+                            val googleCred = GoogleIdTokenCredential.createFrom(credResult.credential.data)
+                            viewModel.setDriveAccountEmail(googleCred.id)
+                        } catch (cancel: GetCredentialCancellationException) {
+                            snackbarHostState.showSnackbar("Connexion Google annulée")
+                            return@launch
+                        } catch (_: Throwable) {
+                            // Continue to Identity AuthorizationClient account selector as fallback
+                        }
+                    }
+                }
+
+                val authRequest = AuthorizationRequest.builder()
+                    .setRequestedScopes(listOf(driveAuthScope))
+                    .build()
+                val authResult = Identity.getAuthorizationClient(activity)
+                    .authorize(authRequest)
+                    .awaitResult()
+
+                val pendingIntent = authResult.pendingIntent
+                if (authResult.hasResolution() && pendingIntent != null) {
+                    pendingDriveAction = action
+                    driveAuthResolutionLauncher.launch(
+                        IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                    )
+                } else {
+                    val token = authResult.accessToken
+                    if (!token.isNullOrBlank()) {
+                        if (driveAccountEmail == null) {
+                            viewModel.setDriveAccountEmail("Compte Google connecté")
+                        }
+                        viewModel.executeDriveAction(token, action)
+                    } else {
+                        snackbarHostState.showSnackbar("Impossible d'obtenir l'accès Google Drive")
+                    }
+                }
+            } catch (t: Throwable) {
+                snackbarHostState.showSnackbar(
+                    "Google Drive indisponible : ${t.localizedMessage ?: "vérifiez Google Play Services"}"
+                )
+            }
+        }
+    }
+
+    // SAF Document Launchers (Zero storage permissions needed!)
     val importVcfLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
@@ -200,10 +403,10 @@ fun MajidAoudiApp(viewModel: ContactViewModel) {
         pendingExportSelectedIds = selectedIds
         pendingExportGroupId = groupId
         val defaultName = when (format) {
-            ExportFormat.VCF_SINGLE -> "Majid_Aoudi_Contacts.vcf"
-            ExportFormat.CSV -> "Majid_Aoudi_Contacts.csv"
-            ExportFormat.JSON -> "Majid_Aoudi_Sauvegarde.json"
-            ExportFormat.VCF_BY_GROUP -> "Majid_Aoudi_Contacts.vcf"
+            ExportFormat.VCF_SINGLE -> "AA_Contacts.vcf"
+            ExportFormat.CSV -> "AA_Contacts.csv"
+            ExportFormat.JSON -> "AA_Contacts_Sauvegarde.json"
+            ExportFormat.VCF_BY_GROUP -> "AA_Contacts.vcf"
         }
         exportFileLauncher.launch(defaultName)
     }
@@ -312,6 +515,7 @@ fun MajidAoudiApp(viewModel: ContactViewModel) {
                                 state = contactsState,
                                 totalContactsCount = totalCount,
                                 noPhoneCount = noPhoneCount,
+                                defaultCountryCode = defaultCountryCode,
                                 groups = groups,
                                 useSplitPane = useSplitPane,
                                 onSearchChanged = viewModel::onSearchQueryChanged,
@@ -340,14 +544,26 @@ fun MajidAoudiApp(viewModel: ContactViewModel) {
                                 onClearSelection = viewModel::clearSelection,
                                 onOpenBatchEdit = { viewModel.setShowBatchEditDialog(true) },
                                 onExportSelection = { ids -> viewModel.openExportSheet(ids) },
+                                onShareWhatsAppSelection = { ids ->
+                                    viewModel.shareContactsVcf(selectedIds = ids, preferWhatsApp = true)
+                                },
+                                onSavePhonebookSelection = { ids -> triggerSaveToPhonebook(ids) },
                                 onAssignToGroup = viewModel::assignSingleContactToGroup,
                                 detailPaneContent = { detail ->
                                     ContactDetailContent(
                                         contact = detail,
+                                        defaultCountryCode = defaultCountryCode,
                                         onClose = viewModel::closeInspection,
                                         onEdit = { viewModel.openEditContactEditor(detail.id) },
                                         onDuplicate = { viewModel.duplicateContact(detail.id) },
                                         onExportSingle = { viewModel.openExportSheet(listOf(detail.id)) },
+                                        onShareWhatsAppVcf = {
+                                            viewModel.shareContactsVcf(
+                                                selectedIds = listOf(detail.id),
+                                                preferWhatsApp = true,
+                                                fileName = "${detail.displayName.ifBlank { "contact" }}.vcf"
+                                            )
+                                        },
                                         onDelete = { viewModel.deleteContacts(listOf(detail.id)) }
                                     )
                                 }
@@ -361,10 +577,18 @@ fun MajidAoudiApp(viewModel: ContactViewModel) {
                                 ) {
                                     ContactDetailContent(
                                         contact = detail,
+                                        defaultCountryCode = defaultCountryCode,
                                         onClose = viewModel::closeInspection,
                                         onEdit = { viewModel.openEditContactEditor(detail.id) },
                                         onDuplicate = { viewModel.duplicateContact(detail.id) },
                                         onExportSingle = { viewModel.openExportSheet(listOf(detail.id)) },
+                                        onShareWhatsAppVcf = {
+                                            viewModel.shareContactsVcf(
+                                                selectedIds = listOf(detail.id),
+                                                preferWhatsApp = true,
+                                                fileName = "${detail.displayName.ifBlank { "contact" }}.vcf"
+                                            )
+                                        },
                                         onDelete = { viewModel.deleteContacts(listOf(detail.id)) }
                                     )
                                 }
@@ -402,11 +626,13 @@ fun MajidAoudiApp(viewModel: ContactViewModel) {
                                 onSetMergeFileSelectAll = viewModel::setMergeFileSelectAll,
                                 onSetMergeStrategy = viewModel::setMergeStrategy,
                                 onSaveMergedToDatabase = viewModel::executeMergeToDatabase,
-                                onExportMergedVcf = { saveMergedVcfLauncher.launch("Majid_Aoudi_Contacts.vcf") },
+                                onExportMergedVcf = { saveMergedVcfLauncher.launch("AA_Contacts.vcf") },
                                 onScanDuplicates = viewModel::scanDuplicates,
                                 onMergeDuplicateCluster = viewModel::mergeDuplicateCluster,
                                 onDeleteDuplicateContact = viewModel::deleteSingleFromCluster,
-                                onTriggerExport = { format -> launchExportFlow(format) }
+                                onTriggerExport = { format -> launchExportFlow(format) },
+                                onShareWhatsApp = { viewModel.shareContactsVcf(selectedIds = null, preferWhatsApp = true) },
+                                onSaveToPhonebook = { triggerSaveToPhonebook(null) }
                             )
                         }
 
@@ -416,7 +642,15 @@ fun MajidAoudiApp(viewModel: ContactViewModel) {
                                 totalContactsCount = totalCount,
                                 backups = backups,
                                 benchmarkReport = benchmarkReport,
+                                defaultCountryCode = defaultCountryCode,
+                                driveAccountEmail = driveAccountEmail,
+                                lastDriveSyncTimestamp = lastDriveSyncTimestamp,
+                                lastDriveSyncInfo = lastDriveSyncInfo,
+                                isDriveSyncing = isDriveSyncing,
                                 onThemeChanged = viewModel::setThemeMode,
+                                onDefaultCountryCodeChanged = viewModel::setDefaultCountryCode,
+                                onTriggerDriveSync = ::requestDriveSync,
+                                onDisconnectDrive = viewModel::disconnectDrive,
                                 onCreateBackup = viewModel::createManualBackup,
                                 onRestoreBackupFile = viewModel::restoreFromBackup,
                                 onRestoreFromExternalJson = {
@@ -458,6 +692,14 @@ fun MajidAoudiApp(viewModel: ContactViewModel) {
                 onSelectFormat = { format ->
                     viewModel.closeExportSheet()
                     launchExportFlow(format, selectedIds = selIds)
+                },
+                onShareWhatsApp = {
+                    viewModel.closeExportSheet()
+                    viewModel.shareContactsVcf(selectedIds = selIds, preferWhatsApp = true)
+                },
+                onSaveToPhonebook = {
+                    viewModel.closeExportSheet()
+                    triggerSaveToPhonebook(selIds)
                 }
             )
         }
